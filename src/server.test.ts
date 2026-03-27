@@ -110,7 +110,7 @@ describe('dewey_search', () => {
   })
 
   afterEach(() => {
-    delete process.env.DEWEY_COLLECTION_ID
+    process.env.DEWEY_COLLECTION_ID = undefined
     vi.restoreAllMocks()
   })
 
@@ -156,7 +156,7 @@ describe('dewey_search', () => {
   })
 
   it('requires collection_id when env var is unset', async () => {
-    delete process.env.DEWEY_COLLECTION_ID
+    process.env.DEWEY_COLLECTION_ID = undefined
     vi.spyOn(globalThis, 'fetch')
 
     const result = await client.callTool({
@@ -199,7 +199,7 @@ describe('dewey_scan_sections', () => {
   })
 
   afterEach(() => {
-    delete process.env.DEWEY_COLLECTION_ID
+    process.env.DEWEY_COLLECTION_ID = undefined
     vi.restoreAllMocks()
   })
 
@@ -280,7 +280,7 @@ describe('dewey_research', () => {
   })
 
   afterEach(() => {
-    delete process.env.DEWEY_COLLECTION_ID
+    process.env.DEWEY_COLLECTION_ID = undefined
     vi.restoreAllMocks()
   })
 
@@ -362,7 +362,7 @@ describe('dewey_list_documents', () => {
   })
 
   afterEach(() => {
-    delete process.env.DEWEY_COLLECTION_ID
+    process.env.DEWEY_COLLECTION_ID = undefined
     vi.restoreAllMocks()
   })
 
@@ -408,7 +408,7 @@ describe('dewey_list_documents', () => {
   })
 
   it('requires collection_id when env var is unset', async () => {
-    delete process.env.DEWEY_COLLECTION_ID
+    process.env.DEWEY_COLLECTION_ID = undefined
 
     const result = await client.callTool({
       name: 'dewey_list_documents',
