@@ -15,7 +15,7 @@ jobs:
         with:
           node-version: 22
 
-      - run: npm install
+      - run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
