@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://meetdewey.com">
-    <img src="https://meetdewey.com/logo.png" alt="Dewey" width="120" />
+    <img src="./logo.png" alt="Dewey" width="120" />
   </a>
 </p>
 
