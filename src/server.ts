@@ -127,10 +127,22 @@ export async function consumeResearchStream(res: Response): Promise<
 // ── Server factory ───────────────────────────────────────────────────────────
 
 function fetchError(err: unknown) {
-  const msg =
-    err instanceof Error && err.name === 'TimeoutError'
-      ? 'Request timed out — the Dewey API did not respond within 10 seconds.'
-      : `Request failed: ${err instanceof Error ? err.message : String(err)}`
+  if (err instanceof Error && err.name === 'TimeoutError') {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Request timed out — the Dewey API did not respond within 10 seconds.',
+        },
+      ],
+      isError: true,
+    }
+  }
+  const cause =
+    err instanceof Error && err.cause instanceof Error
+      ? ` (${err.cause.message})`
+      : ''
+  const msg = `Request failed: ${err instanceof Error ? err.message : String(err)}${cause}`
   return { content: [{ type: 'text' as const, text: msg }], isError: true }
 }
 
