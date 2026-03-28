@@ -1,6 +1,6 @@
 {
   "name": "@meetdewey/mcp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "MCP server for Dewey document search and research",
   "type": "module",
   "bin": {
@@ -8,7 +8,7 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"import('fs').then(fs=>{const f='dist/index.js';const c=fs.readFileSync(f,'utf8');if(!c.startsWith('#!'))fs.writeFileSync(f,'#!/usr/bin/env node\\n'+c)})\"",
+    "build": "rm -rf dist && tsc -p tsconfig.json && node -e \"import('fs').then(fs=>{const f='dist/index.js';const c=fs.readFileSync(f,'utf8');if(!c.startsWith('#!'))fs.writeFileSync(f,'#!/usr/bin/env node\\n'+c)})\"",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -349,7 +349,7 @@ export function createServer() {
         .string()
         .optional()
         .describe(
-          'OpenAI model to use for the research loop. Defaults to "gpt-4o-mini".',
+          'OpenAI model to use for the research loop. Defaults to "gpt-4o-mini" for quick/balanced and "gpt-5.4" for deep/exhaustive.',
         ),
     },
     async ({ query, collection_id, depth, model }) => {
