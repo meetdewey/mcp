@@ -42,6 +42,12 @@ export async function httpError(res: Response) {
   }
 }
 
+/** 10-second timeout for all API calls. Prevents the MCP tool from hanging
+ *  when the Dewey API is slow or temporarily unavailable. */
+export function timeout() {
+  return AbortSignal.timeout(10_000)
+}
+
 // ── SSE stream consumer ──────────────────────────────────────────────────────
 
 type SseEvent =
@@ -120,6 +126,14 @@ export async function consumeResearchStream(res: Response): Promise<
 
 // ── Server factory ───────────────────────────────────────────────────────────
 
+function fetchError(err: unknown) {
+  const msg =
+    err instanceof Error && err.name === 'TimeoutError'
+      ? 'Request timed out — the Dewey API did not respond within 10 seconds.'
+      : `Request failed: ${err instanceof Error ? err.message : String(err)}`
+  return { content: [{ type: 'text' as const, text: msg }], isError: true }
+}
+
 export function createServer() {
   const server = new McpServer({
     name: 'dewey',
@@ -133,9 +147,15 @@ export function createServer() {
     'List all collections in the current Dewey project.',
     {},
     async () => {
-      const res = await fetch(`${API_URL}/collections`, {
-        headers: authHeaders(),
-      })
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
 
       if (!res.ok) return httpError(res)
 
@@ -184,11 +204,17 @@ export function createServer() {
       const collId = collectionId(collection_id)
       if (!collId) return missingCollection()
 
-      const res = await fetch(`${API_URL}/collections/${collId}/query`, {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({ q: query, limit }),
-      })
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/query`, {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ q: query, limit }),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
 
       if (!res.ok) return httpError(res)
 
@@ -244,14 +270,17 @@ export function createServer() {
       const collId = collectionId(collection_id)
       if (!collId) return missingCollection()
 
-      const res = await fetch(
-        `${API_URL}/collections/${collId}/sections/scan`,
-        {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/sections/scan`, {
           method: 'POST',
           headers: jsonHeaders(),
           body: JSON.stringify({ query, top_k }),
-        },
-      )
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
 
       if (!res.ok) return httpError(res)
 
@@ -315,11 +344,17 @@ export function createServer() {
       const collId = collectionId(collection_id)
       if (!collId) return missingCollection()
 
-      const res = await fetch(`${API_URL}/collections/${collId}/research`, {
-        method: 'POST',
-        headers: { ...jsonHeaders(), Accept: 'text/event-stream' },
-        body: JSON.stringify({ q: query, depth, model }),
-      })
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/research`, {
+          method: 'POST',
+          headers: { ...jsonHeaders(), Accept: 'text/event-stream' },
+          body: JSON.stringify({ q: query, depth, model }),
+          signal: AbortSignal.timeout(120_000), // research can take up to 2 min
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
 
       if (!res.ok) return httpError(res)
 
@@ -363,9 +398,15 @@ export function createServer() {
       const collId = collectionId(collection_id)
       if (!collId) return missingCollection()
 
-      const res = await fetch(`${API_URL}/collections/${collId}/documents`, {
-        headers: authHeaders(),
-      })
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/documents`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
 
       if (!res.ok) return httpError(res)
 
@@ -404,9 +445,15 @@ export function createServer() {
       section_id: z.string().describe('Section ID to fetch'),
     },
     async ({ section_id }) => {
-      const res = await fetch(`${API_URL}/sections/${section_id}`, {
-        headers: authHeaders(),
-      })
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/sections/${section_id}`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
 
       if (!res.ok) return httpError(res)
 

@@ -18,8 +18,8 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
 {
   "mcpServers": {
     "dewey": {
-      "command": "npx",
-      "args": ["-y", "@meetdewey/mcp"],
+      "command": "/bin/sh",
+      "args": ["-lc", "npx -y @meetdewey/mcp"],
       "env": {
         "DEWEY_API_KEY": "dwy_live_...",
         "DEWEY_COLLECTION_ID": "..."
@@ -28,6 +28,8 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
   }
 }
 ```
+
+> **Note for Windows users:** replace `"command": "/bin/sh"` and `"args": ["-lc", "npx -y @meetdewey/mcp"]` with `"command": "npx"` and `"args": ["-y", "@meetdewey/mcp"]` — the login-shell wrapper is only needed on macOS/Linux to pick up Homebrew and nvm PATH entries that Claude Desktop doesn't inherit.
 
 ## Environment variables
 
