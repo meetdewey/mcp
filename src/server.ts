@@ -176,7 +176,8 @@ export function createServer() {
         name: string
         visibility: string
         embeddingModel: string
-        documentCount?: number
+        description?: string | null
+        instructions?: string | null
       }>
 
       if (collections.length === 0) {
@@ -184,8 +185,13 @@ export function createServer() {
       }
 
       const text = collections
-        .map((c) => `${c.name} [${c.visibility}] — ID: ${c.id}`)
-        .join('\n')
+        .map((c) => {
+          let line = `${c.name} [${c.visibility}] — ID: ${c.id}`
+          if (c.description) line += `\n  Description: ${c.description}`
+          if (c.instructions) line += `\n  Instructions: ${c.instructions}`
+          return line
+        })
+        .join('\n\n')
 
       return { content: [{ type: 'text', text }] }
     },

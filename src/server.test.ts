@@ -71,6 +71,71 @@ describe('dewey_list_collections', () => {
     expect(text).toContain('Public KB [public] — ID: col-2')
   })
 
+  it('shows description when set', async () => {
+    mockFetchOk([
+      {
+        id: 'col-1',
+        name: 'Docs',
+        visibility: 'private',
+        embeddingModel: 'text-embedding-3-small',
+        description: 'Internal engineering docs.',
+      },
+    ])
+
+    const result = await client.callTool({
+      name: 'dewey_list_collections',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Description: Internal engineering docs.')
+  })
+
+  it('shows instructions when set', async () => {
+    mockFetchOk([
+      {
+        id: 'col-1',
+        name: 'Docs',
+        visibility: 'private',
+        embeddingModel: 'text-embedding-3-small',
+        instructions: 'All figures are in USD.',
+      },
+    ])
+
+    const result = await client.callTool({
+      name: 'dewey_list_collections',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Instructions: All figures are in USD.')
+  })
+
+  it('omits description and instructions lines when null', async () => {
+    mockFetchOk([
+      {
+        id: 'col-1',
+        name: 'Docs',
+        visibility: 'private',
+        embeddingModel: 'text-embedding-3-small',
+        description: null,
+        instructions: null,
+      },
+    ])
+
+    const result = await client.callTool({
+      name: 'dewey_list_collections',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).not.toContain('Description:')
+    expect(text).not.toContain('Instructions:')
+  })
+
   it('returns empty message when no collections', async () => {
     mockFetchOk([])
 
