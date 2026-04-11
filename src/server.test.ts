@@ -175,7 +175,8 @@ describe('dewey_search', () => {
   })
 
   afterEach(() => {
-    process.env.DEWEY_COLLECTION_ID = undefined
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
     vi.restoreAllMocks()
   })
 
@@ -221,7 +222,8 @@ describe('dewey_search', () => {
   })
 
   it('requires collection_id when env var is unset', async () => {
-    process.env.DEWEY_COLLECTION_ID = undefined
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
     vi.spyOn(globalThis, 'fetch')
 
     const result = await client.callTool({
@@ -264,7 +266,8 @@ describe('dewey_scan_sections', () => {
   })
 
   afterEach(() => {
-    process.env.DEWEY_COLLECTION_ID = undefined
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
     vi.restoreAllMocks()
   })
 
@@ -345,7 +348,8 @@ describe('dewey_research', () => {
   })
 
   afterEach(() => {
-    process.env.DEWEY_COLLECTION_ID = undefined
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
     vi.restoreAllMocks()
   })
 
@@ -427,7 +431,8 @@ describe('dewey_list_documents', () => {
   })
 
   afterEach(() => {
-    process.env.DEWEY_COLLECTION_ID = undefined
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
     vi.restoreAllMocks()
   })
 
@@ -473,7 +478,8 @@ describe('dewey_list_documents', () => {
   })
 
   it('requires collection_id when env var is unset', async () => {
-    process.env.DEWEY_COLLECTION_ID = undefined
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
 
     const result = await client.callTool({
       name: 'dewey_list_documents',
