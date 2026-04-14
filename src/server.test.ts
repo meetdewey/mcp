@@ -572,3 +572,1256 @@ describe('dewey_get_section', () => {
     expect(url).toContain('/sections/sec-abc')
   })
 })
+
+// ── dewey_list_claims ─────────────────────────────────────────────────────────
+
+describe('dewey_list_claims', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  function makeClaimsSseStream(events: object[]) {
+    const body = `${events.map((e) => `data: ${JSON.stringify(e)}\n`).join('\n')}\n`
+    return new Response(new TextEncoder().encode(body), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  }
+
+  // ── document_id path (regular JSON) ────────────────────────────────────────
+
+  it('returns claims for a specific document', async () => {
+    mockFetchOk({
+      documentId: 'doc-1',
+      claims: [
+        {
+          id: 'claim-1',
+          sectionTitle: 'Results',
+          sectionLineage: 'Results',
+          text: 'The intervention reduced costs by 20%.',
+          importance: 5,
+          position: 0,
+        },
+        {
+          id: 'claim-2',
+          sectionTitle: 'Methods',
+          sectionLineage: 'Methods',
+          text: 'Participants were randomly assigned.',
+          importance: 3,
+          position: 1,
+        },
+      ],
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { document_id: 'doc-1' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain(
+      '[importance: 5] The intervention reduced costs by 20%.',
+    )
+    expect(text).toContain('Section: Results')
+    expect(text).toContain(
+      '[importance: 3] Participants were randomly assigned.',
+    )
+  })
+
+  it('passes document_id and min_importance to API URL', async () => {
+    const spy = mockFetchOk({ documentId: 'doc-1', claims: [] })
+
+    await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { document_id: 'doc-1', min_importance: 4 },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/documents/doc-1/claims')
+    expect(url).toContain('minImportance=4')
+  })
+
+  it('respects limit for document path', async () => {
+    mockFetchOk({
+      documentId: 'doc-1',
+      claims: Array.from({ length: 10 }, (_, i) => ({
+        id: `claim-${i}`,
+        sectionTitle: 'Sec',
+        sectionLineage: 'Sec',
+        text: `Claim ${i}`,
+        importance: 5,
+        position: i,
+      })),
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { document_id: 'doc-1', limit: 3 },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Claim 0')
+    expect(text).toContain('Claim 2')
+    expect(text).not.toContain('Claim 3')
+  })
+
+  it('returns no-claims message for empty document response', async () => {
+    mockFetchOk({ documentId: 'doc-1', claims: [] })
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { document_id: 'doc-1' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toBe('No claims found.')
+  })
+
+  it('returns error on API failure for document path', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { document_id: 'doc-missing' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 404')
+  })
+
+  // ── collection-wide path (SSE) ──────────────────────────────────────────────
+
+  it('returns collection-wide claims via SSE stream', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeClaimsSseStream([
+        { type: 'progress', pct: 50 },
+        {
+          type: 'done',
+          total: 2,
+          claims: [
+            {
+              id: 'c1',
+              text: 'Revenue grew 15% YoY.',
+              documentId: 'd1',
+              documentName: 'annual.pdf',
+              sectionId: 's1',
+              sectionTitle: 'Financial Results',
+              importance: 5,
+              x: 0.1,
+              y: 0.2,
+            },
+            {
+              id: 'c2',
+              text: 'Headcount increased by 50.',
+              documentId: 'd1',
+              documentName: 'annual.pdf',
+              sectionId: 's2',
+              sectionTitle: 'HR Summary',
+              importance: 4,
+              x: 0.3,
+              y: 0.4,
+            },
+          ],
+        },
+      ]),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { min_importance: 3 },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Revenue grew 15% YoY.')
+    expect(text).toContain('Headcount increased by 50.')
+    expect(text).toContain('Document: annual.pdf')
+    expect(text).toContain('Section: Financial Results')
+    expect(text).toContain('Claim ID: c1')
+  })
+
+  it('filters collection-wide claims by min_importance', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeClaimsSseStream([
+        {
+          type: 'done',
+          total: 3,
+          claims: [
+            {
+              id: 'c1',
+              text: 'High importance claim.',
+              documentId: 'd1',
+              documentName: 'doc.pdf',
+              sectionId: 's1',
+              sectionTitle: 'Sec',
+              importance: 5,
+              x: 0,
+              y: 0,
+            },
+            {
+              id: 'c2',
+              text: 'Low importance claim.',
+              documentId: 'd1',
+              documentName: 'doc.pdf',
+              sectionId: 's1',
+              sectionTitle: 'Sec',
+              importance: 2,
+              x: 0,
+              y: 0,
+            },
+            {
+              id: 'c3',
+              text: 'Medium importance claim.',
+              documentId: 'd1',
+              documentName: 'doc.pdf',
+              sectionId: 's1',
+              sectionTitle: 'Sec',
+              importance: 1,
+              x: 0,
+              y: 0,
+            },
+          ],
+        },
+      ]),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { min_importance: 4 },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('High importance claim.')
+    expect(text).not.toContain('Low importance claim.')
+    expect(text).not.toContain('Medium importance claim.')
+  })
+
+  it('sorts collection-wide claims by importance descending', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeClaimsSseStream([
+        {
+          type: 'done',
+          total: 2,
+          claims: [
+            {
+              id: 'c-low',
+              text: 'Low.',
+              documentId: 'd1',
+              documentName: 'doc.pdf',
+              sectionId: 's1',
+              sectionTitle: 'S',
+              importance: 3,
+              x: 0,
+              y: 0,
+            },
+            {
+              id: 'c-high',
+              text: 'High.',
+              documentId: 'd1',
+              documentName: 'doc.pdf',
+              sectionId: 's1',
+              sectionTitle: 'S',
+              importance: 5,
+              x: 0,
+              y: 0,
+            },
+          ],
+        },
+      ]),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { min_importance: 1 },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text.indexOf('High.')).toBeLessThan(text.indexOf('Low.'))
+  })
+
+  it('shows "Showing N of total" header when filtered', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeClaimsSseStream([
+        {
+          type: 'done',
+          total: 100,
+          claims: [
+            {
+              id: 'c1',
+              text: 'A claim.',
+              documentId: 'd1',
+              documentName: 'doc.pdf',
+              sectionId: 's1',
+              sectionTitle: 'S',
+              importance: 5,
+              x: 0,
+              y: 0,
+            },
+          ],
+        },
+      ]),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { min_importance: 5 },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Showing 1 of 100 total claims')
+    expect(text).toContain('importance ≥ 5')
+  })
+
+  it('returns no-claims message when all filtered out', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeClaimsSseStream([
+        {
+          type: 'done',
+          total: 1,
+          claims: [
+            {
+              id: 'c1',
+              text: 'Low.',
+              documentId: 'd1',
+              documentName: 'doc.pdf',
+              sectionId: 's1',
+              sectionTitle: 'S',
+              importance: 1,
+              x: 0,
+              y: 0,
+            },
+          ],
+        },
+      ]),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: { min_importance: 5 },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toBe('No claims found matching the criteria.')
+  })
+
+  it('returns error on SSE error event', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeClaimsSseStream([{ type: 'error', message: 'UMAP failed' }]),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('UMAP failed')
+  })
+
+  it('requires collection_id when env var unset and no document_id', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('collection_id is required')
+  })
+
+  it('uses collection_id from env var for collection-wide path', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        makeClaimsSseStream([{ type: 'done', total: 0, claims: [] }]),
+      )
+
+    await client.callTool({
+      name: 'dewey_list_claims',
+      arguments: {},
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-default/claims/map')
+  })
+})
+
+// ── dewey_list_contradictions ─────────────────────────────────────────────────
+
+describe('dewey_list_contradictions', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  const sampleContradiction = {
+    id: 'contra-1',
+    severity: 'high',
+    status: 'active',
+    explanation: 'Document A says X while document B says Y.',
+    suggestedInstruction: 'Prefer document B for post-2023 figures.',
+    clusterTopicSummary: 'Revenue figures',
+    createdAt: '2024-01-01T00:00:00Z',
+    claims: [
+      {
+        id: 'claim-a',
+        text: 'Revenue was $10M in 2023.',
+        document: { id: 'd1', filename: 'report-a.pdf' },
+        sectionTitle: 'Financials',
+      },
+      {
+        id: 'claim-b',
+        text: 'Revenue was $12M in 2023.',
+        document: { id: 'd2', filename: 'report-b.pdf' },
+        sectionTitle: 'Annual Summary',
+      },
+    ],
+  }
+
+  it('returns formatted contradictions with explanation and claims', async () => {
+    mockFetchOk({ total: 1, items: [sampleContradiction] })
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('ID: contra-1 | Severity: high')
+    expect(text).toContain('Document A says X while document B says Y.')
+    expect(text).toContain('[report-a.pdf] "Revenue was $10M in 2023."')
+    expect(text).toContain('[report-b.pdf] "Revenue was $12M in 2023."')
+    expect(text).toContain('Prefer document B for post-2023 figures.')
+  })
+
+  it('shows cluster topic summary when present', async () => {
+    mockFetchOk({ total: 1, items: [sampleContradiction] })
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Topic: Revenue figures')
+  })
+
+  it('omits topic line when clusterTopicSummary is null', async () => {
+    mockFetchOk({
+      total: 1,
+      items: [{ ...sampleContradiction, clusterTopicSummary: null }],
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).not.toContain('Topic:')
+  })
+
+  it('shows "No suggested resolution" when suggestedInstruction is null', async () => {
+    mockFetchOk({
+      total: 1,
+      items: [{ ...sampleContradiction, suggestedInstruction: null }],
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('No suggested resolution.')
+  })
+
+  it('passes severity filter as query param', async () => {
+    const spy = mockFetchOk({ total: 0, items: [] })
+
+    await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: { severity: 'high' },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('severity=high')
+  })
+
+  it('passes status filter as query param, defaulting to active', async () => {
+    const spy = mockFetchOk({ total: 0, items: [] })
+
+    await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('status=active')
+  })
+
+  it('passes explicit status to API', async () => {
+    const spy = mockFetchOk({ total: 0, items: [] })
+
+    await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: { status: 'dismissed' },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('status=dismissed')
+  })
+
+  it('passes limit to API', async () => {
+    const spy = mockFetchOk({ total: 0, items: [] })
+
+    await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: { limit: 5 },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('limit=5')
+  })
+
+  it('shows header with total when more items exist', async () => {
+    mockFetchOk({ total: 42, items: [sampleContradiction] })
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('42 total active contradiction(s). Showing first 1')
+  })
+
+  it('returns no-contradictions message when empty', async () => {
+    mockFetchOk({ total: 0, items: [] })
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('No active contradictions found')
+  })
+
+  it('includes severity in no-results message when filter provided', async () => {
+    mockFetchOk({ total: 0, items: [] })
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: { severity: 'high' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('severity "high"')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(500, 'Internal Server Error')
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 500')
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_list_contradictions',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('collection_id is required')
+  })
+})
+
+// ── dewey_detect_contradictions ───────────────────────────────────────────────
+
+describe('dewey_detect_contradictions', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  it('returns run ID, status, and enqueued time', async () => {
+    mockFetchOk({
+      runId: 'run-abc',
+      status: 'pending',
+      enqueuedAt: '2024-06-01T12:00:00Z',
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_detect_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Run ID: run-abc')
+    expect(text).toContain('Status: pending')
+    expect(text).toContain('Enqueued at: 2024-06-01T12:00:00Z')
+  })
+
+  it('makes a POST request to the detect endpoint', async () => {
+    const spy = mockFetchOk({
+      runId: 'run-1',
+      status: 'pending',
+      enqueuedAt: '2024-01-01T00:00:00Z',
+    })
+
+    await client.callTool({
+      name: 'dewey_detect_contradictions',
+      arguments: {},
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-default/contradictions/detect')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('uses provided collection_id over env var', async () => {
+    const spy = mockFetchOk({
+      runId: 'run-1',
+      status: 'pending',
+      enqueuedAt: '2024-01-01T00:00:00Z',
+    })
+
+    await client.callTool({
+      name: 'dewey_detect_contradictions',
+      arguments: { collection_id: 'col-override' },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-override/contradictions/detect')
+  })
+
+  it('mentions dewey_list_contradictions in the output', async () => {
+    mockFetchOk({
+      runId: 'run-1',
+      status: 'pending',
+      enqueuedAt: '2024-01-01T00:00:00Z',
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_detect_contradictions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('dewey_list_contradictions')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(402, 'Payment Required')
+
+    const result = await client.callTool({
+      name: 'dewey_detect_contradictions',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 402')
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_detect_contradictions',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+  })
+})
+
+// ── dewey_resolve_contradiction ───────────────────────────────────────────────
+
+describe('dewey_resolve_contradiction', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  it('calls apply-instruction endpoint when action is apply', async () => {
+    const spy = mockFetchOk({ collection: { id: 'col-default' } })
+
+    await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: {
+        contradiction_id: 'contra-1',
+        action: 'apply',
+      },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain(
+      '/collections/col-default/contradictions/contra-1/apply-instruction',
+    )
+    expect(init?.method).toBe('POST')
+  })
+
+  it('passes custom instruction in body when provided', async () => {
+    const spy = mockFetchOk({ collection: { id: 'col-default' } })
+
+    await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: {
+        contradiction_id: 'contra-1',
+        action: 'apply',
+        instruction: 'Always prefer Q4 2023 figures.',
+      },
+    })
+
+    const [, init] = spy.mock.calls[0] ?? []
+    const body = JSON.parse(init?.body as string)
+    expect(body.instruction).toBe('Always prefer Q4 2023 figures.')
+  })
+
+  it('sends empty body when no instruction provided for apply', async () => {
+    const spy = mockFetchOk({ collection: { id: 'col-default' } })
+
+    await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: {
+        contradiction_id: 'contra-1',
+        action: 'apply',
+      },
+    })
+
+    const [, init] = spy.mock.calls[0] ?? []
+    const body = JSON.parse(init?.body as string)
+    expect(body).toEqual({})
+  })
+
+  it('calls PATCH endpoint with dismissed status when action is dismiss', async () => {
+    const spy = mockFetchOk({ success: true })
+
+    await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: {
+        contradiction_id: 'contra-2',
+        action: 'dismiss',
+      },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-default/contradictions/contra-2')
+    expect(init?.method).toBe('PATCH')
+    const body = JSON.parse(init?.body as string)
+    expect(body).toEqual({ status: 'dismissed' })
+  })
+
+  it('returns applied success message', async () => {
+    mockFetchOk({ collection: { id: 'col-default' } })
+
+    const result = await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: { contradiction_id: 'contra-1', action: 'apply' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('contra-1')
+    expect(text).toContain('applied')
+    expect(text).toContain('resolution instruction')
+  })
+
+  it('returns dismissed success message', async () => {
+    mockFetchOk({ success: true })
+
+    const result = await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: { contradiction_id: 'contra-2', action: 'dismiss' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('contra-2')
+    expect(text).toContain('dismissed')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: { contradiction_id: 'missing', action: 'dismiss' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 404')
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_resolve_contradiction',
+      arguments: { contradiction_id: 'contra-1', action: 'dismiss' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('collection_id is required')
+  })
+})
+
+// ── dewey_get_collection_stats ────────────────────────────────────────────────
+
+describe('dewey_get_collection_stats', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  const sampleStats = {
+    docCount: 42,
+    totalFileSizeBytes: 52428800, // 50 MB
+    totalSections: 380,
+    totalChunks: 1520,
+    statusCounts: { ready: 40, error: 2 },
+    summarizedCount: 35,
+    captionedCount: 30,
+    claimsExtractedCount: 40,
+    totalClaimsCount: 8500,
+  }
+
+  it('returns formatted stats with document count and size', async () => {
+    mockFetchOk(sampleStats)
+
+    const result = await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Documents: 42')
+    expect(text).toContain('50.0 MB')
+  })
+
+  it('returns section and chunk counts', async () => {
+    mockFetchOk(sampleStats)
+
+    const result = await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Sections:  380')
+    expect(text).toContain('Chunks:    1520')
+  })
+
+  it('returns claims count and extraction count', async () => {
+    mockFetchOk(sampleStats)
+
+    const result = await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Claims:    8500')
+    expect(text).toContain('extracted from 40 docs')
+  })
+
+  it('returns summarized and captioned counts', async () => {
+    mockFetchOk(sampleStats)
+
+    const result = await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Summarized:  35 docs')
+    expect(text).toContain('Captioned:   30 docs')
+  })
+
+  it('returns status breakdown', async () => {
+    mockFetchOk(sampleStats)
+
+    const result = await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('ready: 40')
+    expect(text).toContain('error: 2')
+  })
+
+  it('makes GET request to stats endpoint', async () => {
+    const spy = mockFetchOk(sampleStats)
+
+    await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: { collection_id: 'col-xyz' },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-xyz/stats')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(403, 'Forbidden')
+
+    const result = await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 403')
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_get_collection_stats',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('collection_id is required')
+  })
+})
+
+// ── dewey_update_collection ───────────────────────────────────────────────────
+
+describe('dewey_update_collection', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  const updatedCollection = {
+    id: 'col-default',
+    name: 'Research Library',
+    visibility: 'private',
+    description: 'Internal research documents.',
+    instructions: 'Always cite page numbers.',
+    enableSummarization: true,
+    enableCaptioning: false,
+    enableClaimExtraction: true,
+  }
+
+  it('returns formatted collection after update', async () => {
+    mockFetchOk(updatedCollection)
+
+    const result = await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: { name: 'Research Library' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Collection updated: Research Library')
+    expect(text).toContain('Visibility: private')
+  })
+
+  it('shows feature flag enabled/disabled state', async () => {
+    mockFetchOk(updatedCollection)
+
+    const result = await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: { enable_summarization: true },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Summarization:     enabled')
+    expect(text).toContain('Captioning:        disabled')
+    expect(text).toContain('Claim extraction:  enabled')
+  })
+
+  it('shows description and instructions when set', async () => {
+    mockFetchOk(updatedCollection)
+
+    const result = await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: { instructions: 'Always cite page numbers.' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Description: Internal research documents.')
+    expect(text).toContain('Instructions: Always cite page numbers.')
+  })
+
+  it('omits description and instructions lines when null', async () => {
+    mockFetchOk({
+      ...updatedCollection,
+      description: null,
+      instructions: null,
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: { description: null },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).not.toContain('Description:')
+    expect(text).not.toContain('Instructions:')
+  })
+
+  it('sends only provided fields in the PATCH body', async () => {
+    const spy = mockFetchOk(updatedCollection)
+
+    await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: {
+        instructions: 'Prefer primary sources.',
+        visibility: 'public',
+      },
+    })
+
+    const [, init] = spy.mock.calls[0] ?? []
+    const body = JSON.parse(init?.body as string)
+    expect(body).toEqual({
+      instructions: 'Prefer primary sources.',
+      visibility: 'public',
+    })
+    expect(body).not.toHaveProperty('name')
+    expect(body).not.toHaveProperty('enableSummarization')
+  })
+
+  it('sends camelCase field names for feature flags', async () => {
+    const spy = mockFetchOk(updatedCollection)
+
+    await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: {
+        enable_summarization: true,
+        enable_captioning: false,
+        enable_claim_extraction: true,
+      },
+    })
+
+    const [, init] = spy.mock.calls[0] ?? []
+    const body = JSON.parse(init?.body as string)
+    expect(body.enableSummarization).toBe(true)
+    expect(body.enableCaptioning).toBe(false)
+    expect(body.enableClaimExtraction).toBe(true)
+  })
+
+  it('makes PATCH request to collections endpoint', async () => {
+    const spy = mockFetchOk(updatedCollection)
+
+    await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: { collection_id: 'col-xyz', name: 'New Name' },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-xyz')
+    expect(init?.method).toBe('PATCH')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(400, 'Bad Request')
+
+    const result = await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: { name: 'Valid Name' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 400')
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_update_collection',
+      arguments: { name: 'Test' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('collection_id is required')
+  })
+})
+
+// ── dewey_delete_document ─────────────────────────────────────────────────────
+
+describe('dewey_delete_document', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns success message after deletion', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, { status: 204 }),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_delete_document',
+      arguments: { document_id: 'doc-abc' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('doc-abc')
+    expect(text).toContain('deleted successfully')
+  })
+
+  it('makes DELETE request to correct URL', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }))
+
+    await client.callTool({
+      name: 'dewey_delete_document',
+      arguments: { document_id: 'doc-xyz' },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/documents/doc-xyz')
+    expect(init?.method).toBe('DELETE')
+  })
+
+  it('returns error on 404', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_delete_document',
+      arguments: { document_id: 'doc-missing' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 404')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(500, 'Internal Server Error')
+
+    const result = await client.callTool({
+      name: 'dewey_delete_document',
+      arguments: { document_id: 'doc-1' },
+    })
+
+    expect(result.isError).toBe(true)
+  })
+})

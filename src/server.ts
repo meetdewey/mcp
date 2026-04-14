@@ -48,7 +48,71 @@ export function timeout() {
   return AbortSignal.timeout(10_000)
 }
 
-// ── SSE stream consumer ──────────────────────────────────────────────────────
+// ── SSE stream consumers ─────────────────────────────────────────────────────
+
+type ClaimMapItem = {
+  id: string
+  text: string
+  sourceText?: string
+  documentId: string
+  documentName: string
+  sectionId: string
+  sectionTitle: string
+  importance: number
+  x: number
+  y: number
+}
+
+type ClaimSseEvent =
+  | { type: 'progress'; pct: number }
+  | { type: 'done'; total: number; claims: ClaimMapItem[] }
+  | { type: 'error'; message: string }
+
+export async function consumeClaimsStream(
+  res: Response,
+): Promise<
+  | { ok: true; total: number; claims: ClaimMapItem[] }
+  | { ok: false; message: string }
+> {
+  if (!res.body) return { ok: false, message: 'Empty response body' }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        let event: ClaimSseEvent
+        try {
+          event = JSON.parse(line.slice(6)) as ClaimSseEvent
+        } catch {
+          continue
+        }
+
+        if (event.type === 'done') {
+          return { ok: true, total: event.total, claims: event.claims }
+        }
+        if (event.type === 'error') {
+          return { ok: false, message: event.message }
+        }
+        // 'progress' events are ignored in MCP context
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+
+  return { ok: false, message: 'Stream ended without a done event' }
+}
 
 type SseEvent =
   | { type: 'scan'; sectionCount: number }
@@ -496,6 +560,581 @@ export function createServer() {
       const text = `${header}\n\n${section.content ?? '(content not available)'}`
 
       return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_list_claims ───────────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_list_claims',
+    'List factual claims extracted from documents in a Dewey collection or a specific document. Claims are scored by importance (1=low, 5=critical). Use min_importance to focus on the most significant claims.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set and document_id is not provided.',
+        ),
+      document_id: z
+        .string()
+        .optional()
+        .describe(
+          'Scope claims to a specific document ID. When provided, collection_id is not required.',
+        ),
+      min_importance: z
+        .number()
+        .int()
+        .min(1)
+        .max(5)
+        .optional()
+        .describe('Minimum importance score (1–5). Defaults to 3.'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe('Maximum number of claims to return. Defaults to 50.'),
+    },
+    async ({ collection_id, document_id, min_importance = 3, limit = 50 }) => {
+      if (document_id) {
+        // Per-document endpoint — regular JSON, fast
+        let res: Response
+        try {
+          res = await fetch(
+            `${API_URL}/documents/${document_id}/claims?minImportance=${min_importance}`,
+            { headers: authHeaders(), signal: timeout() },
+          )
+        } catch (err) {
+          return fetchError(err)
+        }
+        if (!res.ok) return httpError(res)
+
+        const data = (await res.json()) as {
+          documentId: string
+          claims: Array<{
+            id: string
+            sectionTitle: string
+            sectionLineage: string
+            text: string
+            importance: number
+            position: number
+          }>
+        }
+
+        const claims = data.claims.slice(0, limit)
+        if (claims.length === 0) {
+          return { content: [{ type: 'text', text: 'No claims found.' }] }
+        }
+
+        const text = claims
+          .map(
+            (c, i) =>
+              `[${i + 1}] [importance: ${c.importance}] ${c.text}\n  Section: ${c.sectionTitle}`,
+          )
+          .join('\n\n')
+        return { content: [{ type: 'text', text }] }
+      }
+
+      // Collection-wide via SSE claims/map endpoint
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/claims/map`, {
+          headers: { ...authHeaders(), Accept: 'text/event-stream' },
+          signal: AbortSignal.timeout(60_000),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const result = await consumeClaimsStream(res)
+      if (!result.ok) {
+        return {
+          content: [
+            { type: 'text', text: `Claims fetch failed: ${result.message}` },
+          ],
+          isError: true,
+        }
+      }
+
+      const filtered = result.claims
+        .filter((c) => c.importance >= min_importance)
+        .sort((a, b) => b.importance - a.importance)
+        .slice(0, limit)
+
+      if (filtered.length === 0) {
+        return {
+          content: [
+            { type: 'text', text: 'No claims found matching the criteria.' },
+          ],
+        }
+      }
+
+      const showing =
+        filtered.length < result.total
+          ? `Showing ${filtered.length} of ${result.total} total claims (importance ≥ ${min_importance}):\n\n`
+          : `${filtered.length} claim(s):\n\n`
+
+      const text =
+        showing +
+        filtered
+          .map(
+            (c, i) =>
+              `[${i + 1}] [importance: ${c.importance}] ${c.text}\n  Document: ${c.documentName}\n  Section: ${c.sectionTitle}\n  Claim ID: ${c.id}`,
+          )
+          .join('\n\n')
+
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_list_contradictions ───────────────────────────────────────────────
+
+  server.tool(
+    'dewey_list_contradictions',
+    'List contradictions detected in a Dewey collection — clusters of claims that conflict with each other. Each contradiction includes an explanation, the conflicting claims with their source documents, and a suggested resolution instruction.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+      severity: z
+        .enum(['low', 'medium', 'high'])
+        .optional()
+        .describe('Filter by severity level.'),
+      status: z
+        .enum(['active', 'dismissed', 'applied'])
+        .optional()
+        .describe(
+          'Filter by resolution status. Defaults to "active" (unresolved contradictions).',
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe(
+          'Maximum number of contradictions to return (1–100). Defaults to 20.',
+        ),
+    },
+    async ({ collection_id, severity, status = 'active', limit = 20 }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      const params = new URLSearchParams({ status, limit: String(limit) })
+      if (severity) params.set('severity', severity)
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/contradictions?${params}`,
+          { headers: authHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const data = (await res.json()) as {
+        total: number
+        items: Array<{
+          id: string
+          severity: string
+          status: string
+          explanation: string
+          suggestedInstruction: string | null
+          clusterTopicSummary: string | null
+          createdAt: string
+          claims: Array<{
+            id: string
+            text: string
+            document: { id: string; filename: string }
+            sectionTitle: string
+          }>
+        }>
+      }
+
+      if (data.items.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `No ${status} contradictions found${severity ? ` with severity "${severity}"` : ''}.`,
+            },
+          ],
+        }
+      }
+
+      const header =
+        data.total > data.items.length
+          ? `${data.total} total ${status} contradiction(s). Showing first ${data.items.length}:\n\n`
+          : `${data.items.length} ${status} contradiction(s):\n\n`
+
+      const text =
+        header +
+        data.items
+          .map((c, i) => {
+            const claimLines = c.claims
+              .map(
+                (claim) => `  • [${claim.document.filename}] "${claim.text}"`,
+              )
+              .join('\n')
+            const resolution = c.suggestedInstruction
+              ? `Suggested resolution: ${c.suggestedInstruction}`
+              : 'No suggested resolution.'
+            return [
+              `[${i + 1}] ID: ${c.id} | Severity: ${c.severity}`,
+              c.clusterTopicSummary ? `Topic: ${c.clusterTopicSummary}` : null,
+              c.explanation,
+              `\nConflicting claims:\n${claimLines}`,
+              `\n${resolution}`,
+            ]
+              .filter(Boolean)
+              .join('\n')
+          })
+          .join('\n\n---\n\n')
+
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_detect_contradictions ─────────────────────────────────────────────
+
+  server.tool(
+    'dewey_detect_contradictions',
+    'Trigger a contradiction detection run on a Dewey collection. Analyzes all extracted claims for conflicts, clusters contradicting statements, and generates resolution suggestions. The run is asynchronous — use dewey_list_contradictions after a few minutes to see results.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/contradictions/detect`,
+          {
+            method: 'POST',
+            headers: jsonHeaders(),
+            signal: timeout(),
+          },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const run = (await res.json()) as {
+        runId: string
+        status: string
+        enqueuedAt: string
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Contradiction detection started.\nRun ID: ${run.runId}\nStatus: ${run.status}\nEnqueued at: ${run.enqueuedAt}\n\nUse dewey_list_contradictions in a few minutes to view results.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_resolve_contradiction ─────────────────────────────────────────────
+
+  server.tool(
+    'dewey_resolve_contradiction',
+    'Apply or dismiss a detected contradiction in a Dewey collection. Applying appends a resolution instruction to the collection settings so future research respects the resolution. Dismissing marks the contradiction as ignored.',
+    {
+      contradiction_id: z
+        .string()
+        .describe(
+          'Contradiction ID to resolve (from dewey_list_contradictions).',
+        ),
+      action: z
+        .enum(['apply', 'dismiss'])
+        .describe(
+          '"apply" appends the resolution instruction to collection settings; "dismiss" marks the contradiction as ignored.',
+        ),
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+      instruction: z
+        .string()
+        .max(500)
+        .optional()
+        .describe(
+          'Custom resolution instruction to append (apply only). Overrides the suggested instruction when provided.',
+        ),
+    },
+    async ({ contradiction_id, action, collection_id, instruction }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        if (action === 'apply') {
+          res = await fetch(
+            `${API_URL}/collections/${collId}/contradictions/${contradiction_id}/apply-instruction`,
+            {
+              method: 'POST',
+              headers: jsonHeaders(),
+              body: JSON.stringify(instruction ? { instruction } : {}),
+              signal: timeout(),
+            },
+          )
+        } else {
+          res = await fetch(
+            `${API_URL}/collections/${collId}/contradictions/${contradiction_id}`,
+            {
+              method: 'PATCH',
+              headers: jsonHeaders(),
+              body: JSON.stringify({ status: 'dismissed' }),
+              signal: timeout(),
+            },
+          )
+        }
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const verb = action === 'apply' ? 'applied' : 'dismissed'
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Contradiction ${contradiction_id} ${verb} successfully.${action === 'apply' ? ' The resolution instruction has been appended to collection settings.' : ''}`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_get_collection_stats ──────────────────────────────────────────────
+
+  server.tool(
+    'dewey_get_collection_stats',
+    'Get statistics for a Dewey collection: document count, storage usage, section and chunk counts, total extracted claims, and processing status breakdown.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/stats`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const stats = (await res.json()) as {
+        docCount: number
+        totalFileSizeBytes: number
+        totalSections: number
+        totalChunks: number
+        statusCounts: Record<string, number>
+        summarizedCount: number
+        captionedCount: number
+        claimsExtractedCount: number
+        totalClaimsCount: number
+      }
+
+      const sizeMB = (stats.totalFileSizeBytes / 1024 / 1024).toFixed(1)
+      const statusLines = Object.entries(stats.statusCounts)
+        .map(([k, v]) => `  ${k}: ${v}`)
+        .join('\n')
+
+      const text = [
+        `Documents: ${stats.docCount} (${sizeMB} MB)`,
+        `Sections:  ${stats.totalSections}`,
+        `Chunks:    ${stats.totalChunks}`,
+        `Claims:    ${stats.totalClaimsCount} (extracted from ${stats.claimsExtractedCount} docs)`,
+        `Summarized:  ${stats.summarizedCount} docs`,
+        `Captioned:   ${stats.captionedCount} docs`,
+        `Status breakdown:\n${statusLines}`,
+      ].join('\n')
+
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_update_collection ─────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_update_collection',
+    'Update settings for a Dewey collection: name, description, custom instructions, visibility, and feature flags for summarization, captioning, and claim extraction. Instructions guide how research answers are framed.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+      name: z
+        .string()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('New name for the collection.'),
+      description: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Short description of the collection. Pass null to clear.'),
+      instructions: z
+        .string()
+        .max(4000)
+        .nullable()
+        .optional()
+        .describe(
+          'Custom instructions that guide research answers (e.g. "Always cite page numbers", "Treat the 2024 edition as authoritative"). Pass null to clear.',
+        ),
+      visibility: z
+        .enum(['private', 'public'])
+        .optional()
+        .describe('Access visibility of the collection.'),
+      enable_summarization: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable LLM-generated section summaries. Improves scan_sections quality.',
+        ),
+      enable_captioning: z
+        .boolean()
+        .optional()
+        .describe('Enable AI captions for extracted images and tables.'),
+      enable_claim_extraction: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable automatic extraction of factual claims from document content.',
+        ),
+    },
+    async ({
+      collection_id,
+      name,
+      description,
+      instructions,
+      visibility,
+      enable_summarization,
+      enable_captioning,
+      enable_claim_extraction,
+    }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      const body: Record<string, unknown> = {}
+      if (name !== undefined) body.name = name
+      if (description !== undefined) body.description = description
+      if (instructions !== undefined) body.instructions = instructions
+      if (visibility !== undefined) body.visibility = visibility
+      if (enable_summarization !== undefined)
+        body.enableSummarization = enable_summarization
+      if (enable_captioning !== undefined)
+        body.enableCaptioning = enable_captioning
+      if (enable_claim_extraction !== undefined)
+        body.enableClaimExtraction = enable_claim_extraction
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}`, {
+          method: 'PATCH',
+          headers: jsonHeaders(),
+          body: JSON.stringify(body),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const c = (await res.json()) as {
+        id: string
+        name: string
+        visibility: string
+        description?: string | null
+        instructions?: string | null
+        enableSummarization: boolean
+        enableCaptioning: boolean
+        enableClaimExtraction: boolean
+      }
+
+      const text = [
+        `Collection updated: ${c.name} (${c.id})`,
+        `Visibility: ${c.visibility}`,
+        c.description ? `Description: ${c.description}` : null,
+        c.instructions ? `Instructions: ${c.instructions}` : null,
+        `Summarization:     ${c.enableSummarization ? 'enabled' : 'disabled'}`,
+        `Captioning:        ${c.enableCaptioning ? 'enabled' : 'disabled'}`,
+        `Claim extraction:  ${c.enableClaimExtraction ? 'enabled' : 'disabled'}`,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_delete_document ───────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_delete_document',
+    'Permanently delete a document from a Dewey collection by its ID. This removes the document along with all its sections, chunks, and extracted claims. This action cannot be undone.',
+    {
+      document_id: z
+        .string()
+        .describe('ID of the document to delete (from dewey_list_documents).'),
+    },
+    async ({ document_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/documents/${document_id}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Document ${document_id} deleted successfully.`,
+          },
+        ],
+      }
     },
   )
 

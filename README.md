@@ -41,28 +41,59 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
 
 ## Available tools
 
+### Search & research
+
 | Tool | Description |
 |---|---|
 | `dewey_list_collections` | List all collections in the project, including description and research instructions when set |
 | `dewey_search` | Hybrid semantic + keyword search over chunk content |
 | `dewey_scan_sections` | Lightweight search over section titles and summaries |
 | `dewey_research` | Agentic research query with configurable depth — returns a grounded, cited answer |
-| `dewey_list_documents` | List documents in a collection with their processing status |
 | `dewey_get_section` | Fetch the full Markdown content of a section by ID |
+
+### Document management
+
+| Tool | Description |
+|---|---|
+| `dewey_list_documents` | List documents in a collection with their processing status |
+| `dewey_delete_document` | Permanently delete a document and all its derived data |
+
+### Claims & contradictions
+
+| Tool | Description |
+|---|---|
+| `dewey_list_claims` | List extracted factual claims from a collection or specific document, filterable by importance (1–5) |
+| `dewey_list_contradictions` | List detected contradictions — clusters of conflicting claims with explanations and suggested resolutions |
+| `dewey_detect_contradictions` | Trigger an async contradiction detection run across all claims in a collection |
+| `dewey_resolve_contradiction` | Apply a resolution instruction to a contradiction or dismiss it |
+
+### Collection settings
+
+| Tool | Description |
+|---|---|
+| `dewey_get_collection_stats` | Get document count, storage, section/chunk/claim counts, and processing status breakdown |
+| `dewey_update_collection` | Update collection name, description, research instructions, visibility, and feature flags |
 
 ### Research instructions
 
-Collections can have natural-language instructions that are automatically injected into the research system prompt — for example, noting units, preferred sources, or how to handle missing information. These are set per-collection in the Dewey dashboard or via the API and apply transparently whenever `dewey_research` is called against that collection. No configuration is needed in the MCP server itself.
+Collections can have natural-language instructions that are automatically injected into the research system prompt — for example, noting units, preferred sources, or how to handle missing information. They can be set in the Dewey dashboard, via the API, or directly through `dewey_update_collection`. When `dewey_resolve_contradiction` is used to apply a resolution, the suggested instruction is also appended here automatically.
 
 ### Tool usage pattern
 
-A typical agentic workflow uses the tools in this order:
+A typical read-only research workflow:
 
 1. `dewey_list_collections` — discover available collections and understand their purpose
 2. `dewey_scan_sections` — quickly explore document structure to identify relevant sections
 3. `dewey_get_section` — load full content of a specific section
 4. `dewey_search` — retrieve the most relevant chunks for a focused question
 5. `dewey_research` — run a full agentic research query for questions that need multi-step reasoning
+
+For deeper analysis and curation:
+
+1. `dewey_get_collection_stats` — assess how much content has been processed
+2. `dewey_list_claims` — surface the most important facts across documents
+3. `dewey_list_contradictions` — identify where documents disagree
+4. `dewey_resolve_contradiction` — apply or dismiss each contradiction, updating collection instructions automatically
 
 ## License
 
