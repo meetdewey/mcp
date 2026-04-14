@@ -1138,5 +1138,301 @@ export function createServer() {
     },
   )
 
+  // ── dewey_get_document_sections ────────────────────────────────────────────
+
+  server.tool(
+    'dewey_get_document_sections',
+    'List all sections in a document — the table of contents with heading levels, positions, and section IDs. Use section IDs with dewey_get_section to load full content.',
+    {
+      document_id: z
+        .string()
+        .describe('Document ID (from dewey_list_documents).'),
+    },
+    async ({ document_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/documents/${document_id}/sections`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const sections = (await res.json()) as Array<{
+        id: string
+        title: string
+        level: number
+        position: number
+        markdownOffsetStart: number
+        markdownOffsetEnd: number
+      }>
+
+      if (sections.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No sections found in document.' }],
+        }
+      }
+
+      const text = sections
+        .map((s) => {
+          const indent = '  '.repeat(Math.max(0, s.level - 1))
+          return `${indent}${'#'.repeat(s.level)} ${s.title} — ID: ${s.id}`
+        })
+        .join('\n')
+
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_get_document_markdown ─────────────────────────────────────────────
+
+  server.tool(
+    'dewey_get_document_markdown',
+    'Fetch the full Markdown content of a document as converted by Dewey. Use for document-level analysis when you need more context than individual sections provide.',
+    {
+      document_id: z
+        .string()
+        .describe('Document ID (from dewey_list_documents).'),
+    },
+    async ({ document_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/documents/${document_id}/markdown`, {
+          headers: authHeaders(),
+          signal: AbortSignal.timeout(30_000), // Markdown can be large
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const text = await res.text()
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_retry_document ────────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_retry_document',
+    'Retry processing a document that failed ingestion. Clears the error state and re-queues the document through the processing pipeline.',
+    {
+      document_id: z
+        .string()
+        .describe('Document ID to retry (from dewey_list_documents).'),
+    },
+    async ({ document_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/documents/${document_id}/retry`, {
+          method: 'POST',
+          headers: jsonHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const doc = (await res.json()) as {
+        id: string
+        filename: string
+        status: string
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Document "${doc.filename}" (${doc.id}) re-queued for processing. Status: ${doc.status}.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_get_contradiction_run ─────────────────────────────────────────────
+
+  server.tool(
+    'dewey_get_contradiction_run',
+    'Get the status of the latest contradiction detection run for a collection. Use to poll progress after calling dewey_detect_contradictions.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/contradictions/runs/latest`,
+          { headers: authHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const run = (await res.json()) as {
+        id: string
+        status: string
+        claimsProcessed: number | null
+        clustersAnalyzed: number | null
+        contradictionsFound: number | null
+        model: string | null
+        startedAt: string | null
+        completedAt: string | null
+        error: string | null
+        createdAt: string
+      }
+
+      const lines = [
+        `Run ID: ${run.id}`,
+        `Status: ${run.status}`,
+        run.model ? `Model: ${run.model}` : null,
+        run.claimsProcessed != null
+          ? `Claims processed: ${run.claimsProcessed}`
+          : null,
+        run.clustersAnalyzed != null
+          ? `Clusters analyzed: ${run.clustersAnalyzed}`
+          : null,
+        run.contradictionsFound != null
+          ? `Contradictions found: ${run.contradictionsFound}`
+          : null,
+        run.startedAt ? `Started: ${run.startedAt}` : null,
+        run.completedAt ? `Completed: ${run.completedAt}` : null,
+        run.error ? `Error: ${run.error}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      return { content: [{ type: 'text', text: lines }] }
+    },
+  )
+
+  // ── dewey_recompute_summaries ───────────────────────────────────────────────
+
+  server.tool(
+    'dewey_recompute_summaries',
+    'Re-run AI section summarization across all documents in a collection. Useful after changing the collection LLM model. Runs asynchronously — check dewey_get_collection_stats for progress.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/recompute/summaries`,
+          { method: 'POST', headers: jsonHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const { enqueued } = (await res.json()) as { enqueued: number }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Summarization queued for ${enqueued} document(s). Sections will be updated as each document is processed.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_recompute_captions ────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_recompute_captions',
+    'Re-run AI captioning for all images and tables across all documents in a collection. Useful after changing the collection LLM model. Runs asynchronously.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/recompute/captions`,
+          { method: 'POST', headers: jsonHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const { enqueued } = (await res.json()) as { enqueued: number }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Captioning queued for ${enqueued} image/table chunk(s). Captions will be updated as each document is processed.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_delete_collection ─────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_delete_collection',
+    'Permanently delete a Dewey collection and all its data: documents, sections, chunks, claims, and stored files. This action cannot be undone.',
+    {
+      collection_id: z
+        .string()
+        .describe(
+          'ID of the collection to delete (from dewey_list_collections).',
+        ),
+    },
+    async ({ collection_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collection_id}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Collection ${collection_id} and all its data deleted successfully.`,
+          },
+        ],
+      }
+    },
+  )
+
   return server
 }

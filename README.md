@@ -56,6 +56,9 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
 | Tool | Description |
 |---|---|
 | `dewey_list_documents` | List documents in a collection with their processing status |
+| `dewey_get_document_sections` | List all sections in a document (table of contents with heading levels and IDs) |
+| `dewey_get_document_markdown` | Fetch the full converted Markdown content of a document |
+| `dewey_retry_document` | Retry a failed document — clears error state and re-queues processing |
 | `dewey_delete_document` | Permanently delete a document and all its derived data |
 
 ### Claims & contradictions
@@ -65,6 +68,7 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
 | `dewey_list_claims` | List extracted factual claims from a collection or specific document, filterable by importance (1–5) |
 | `dewey_list_contradictions` | List detected contradictions — clusters of conflicting claims with explanations and suggested resolutions |
 | `dewey_detect_contradictions` | Trigger an async contradiction detection run across all claims in a collection |
+| `dewey_get_contradiction_run` | Get the status and stats of the latest contradiction detection run (use to poll after `dewey_detect_contradictions`) |
 | `dewey_resolve_contradiction` | Apply a resolution instruction to a contradiction or dismiss it |
 
 ### Collection settings
@@ -73,6 +77,9 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
 |---|---|
 | `dewey_get_collection_stats` | Get document count, storage, section/chunk/claim counts, and processing status breakdown |
 | `dewey_update_collection` | Update collection name, description, research instructions, visibility, and feature flags |
+| `dewey_recompute_summaries` | Re-run AI section summarization across all documents (e.g. after changing the LLM model) |
+| `dewey_recompute_captions` | Re-run AI captioning for all images and tables across all documents |
+| `dewey_delete_collection` | Permanently delete a collection and all its data |
 
 ### Research instructions
 

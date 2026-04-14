@@ -1825,3 +1825,576 @@ describe('dewey_delete_document', () => {
     expect(result.isError).toBe(true)
   })
 })
+
+// ── dewey_get_document_sections ───────────────────────────────────────────────
+
+describe('dewey_get_document_sections', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns indented section tree', async () => {
+    mockFetchOk([
+      {
+        id: 's1',
+        title: 'Introduction',
+        level: 1,
+        position: 0,
+        markdownOffsetStart: 0,
+        markdownOffsetEnd: 500,
+      },
+      {
+        id: 's2',
+        title: 'Background',
+        level: 2,
+        position: 1,
+        markdownOffsetStart: 500,
+        markdownOffsetEnd: 1000,
+      },
+      {
+        id: 's3',
+        title: 'Methods',
+        level: 1,
+        position: 2,
+        markdownOffsetStart: 1000,
+        markdownOffsetEnd: 2000,
+      },
+    ])
+
+    const result = await client.callTool({
+      name: 'dewey_get_document_sections',
+      arguments: { document_id: 'doc-1' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('# Introduction — ID: s1')
+    expect(text).toContain('  ## Background — ID: s2')
+    expect(text).toContain('# Methods — ID: s3')
+  })
+
+  it('indents nested headings by level - 1', async () => {
+    mockFetchOk([
+      {
+        id: 's1',
+        title: 'Top',
+        level: 1,
+        position: 0,
+        markdownOffsetStart: 0,
+        markdownOffsetEnd: 100,
+      },
+      {
+        id: 's2',
+        title: 'Mid',
+        level: 3,
+        position: 1,
+        markdownOffsetStart: 100,
+        markdownOffsetEnd: 200,
+      },
+    ])
+
+    const result = await client.callTool({
+      name: 'dewey_get_document_sections',
+      arguments: { document_id: 'doc-1' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    // level 3 → 2 spaces of indent
+    expect(text).toContain('    ### Mid — ID: s2')
+  })
+
+  it('returns no-sections message when empty', async () => {
+    mockFetchOk([])
+
+    const result = await client.callTool({
+      name: 'dewey_get_document_sections',
+      arguments: { document_id: 'doc-1' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toBe('No sections found in document.')
+  })
+
+  it('makes GET request to sections endpoint', async () => {
+    const spy = mockFetchOk([])
+
+    await client.callTool({
+      name: 'dewey_get_document_sections',
+      arguments: { document_id: 'doc-abc' },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/documents/doc-abc/sections')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_get_document_sections',
+      arguments: { document_id: 'doc-missing' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 404')
+  })
+})
+
+// ── dewey_get_document_markdown ───────────────────────────────────────────────
+
+describe('dewey_get_document_markdown', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns plain Markdown content', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('# Hello\n\nSome content here.', {
+        status: 200,
+        headers: { 'Content-Type': 'text/markdown' },
+      }),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_get_document_markdown',
+      arguments: { document_id: 'doc-1' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('# Hello')
+    expect(text).toContain('Some content here.')
+  })
+
+  it('makes GET request to markdown endpoint', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('# Doc', { status: 200 }))
+
+    await client.callTool({
+      name: 'dewey_get_document_markdown',
+      arguments: { document_id: 'doc-xyz' },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/documents/doc-xyz/markdown')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_get_document_markdown',
+      arguments: { document_id: 'doc-missing' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 404')
+  })
+})
+
+// ── dewey_retry_document ──────────────────────────────────────────────────────
+
+describe('dewey_retry_document', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns re-queued confirmation with filename and status', async () => {
+    mockFetchOk({ id: 'doc-1', filename: 'report.pdf', status: 'uploading' })
+
+    const result = await client.callTool({
+      name: 'dewey_retry_document',
+      arguments: { document_id: 'doc-1' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('report.pdf')
+    expect(text).toContain('doc-1')
+    expect(text).toContain('uploading')
+  })
+
+  it('makes POST request to retry endpoint', async () => {
+    const spy = mockFetchOk({
+      id: 'doc-abc',
+      filename: 'file.pdf',
+      status: 'uploading',
+    })
+
+    await client.callTool({
+      name: 'dewey_retry_document',
+      arguments: { document_id: 'doc-abc' },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/documents/doc-abc/retry')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_retry_document',
+      arguments: { document_id: 'doc-missing' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 404')
+  })
+})
+
+// ── dewey_get_contradiction_run ───────────────────────────────────────────────
+
+describe('dewey_get_contradiction_run', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  const completedRun = {
+    id: 'run-1',
+    status: 'completed',
+    claimsProcessed: 500,
+    clustersAnalyzed: 42,
+    contradictionsFound: 7,
+    model: 'gpt-4o-mini',
+    startedAt: '2024-06-01T12:00:00Z',
+    completedAt: '2024-06-01T12:05:00Z',
+    error: null,
+    createdAt: '2024-06-01T12:00:00Z',
+  }
+
+  it('returns run status and stats', async () => {
+    mockFetchOk(completedRun)
+
+    const result = await client.callTool({
+      name: 'dewey_get_contradiction_run',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Run ID: run-1')
+    expect(text).toContain('Status: completed')
+    expect(text).toContain('Claims processed: 500')
+    expect(text).toContain('Clusters analyzed: 42')
+    expect(text).toContain('Contradictions found: 7')
+    expect(text).toContain('Model: gpt-4o-mini')
+  })
+
+  it('shows started and completed timestamps', async () => {
+    mockFetchOk(completedRun)
+
+    const result = await client.callTool({
+      name: 'dewey_get_contradiction_run',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Started: 2024-06-01T12:00:00Z')
+    expect(text).toContain('Completed: 2024-06-01T12:05:00Z')
+  })
+
+  it('omits null fields', async () => {
+    mockFetchOk({
+      ...completedRun,
+      claimsProcessed: null,
+      clustersAnalyzed: null,
+      contradictionsFound: null,
+      model: null,
+      startedAt: null,
+      completedAt: null,
+    })
+
+    const result = await client.callTool({
+      name: 'dewey_get_contradiction_run',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).not.toContain('Claims processed')
+    expect(text).not.toContain('Model:')
+    expect(text).not.toContain('Started:')
+  })
+
+  it('shows error field when run failed', async () => {
+    mockFetchOk({ ...completedRun, status: 'failed', error: 'Out of credits' })
+
+    const result = await client.callTool({
+      name: 'dewey_get_contradiction_run',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('Status: failed')
+    expect(text).toContain('Error: Out of credits')
+  })
+
+  it('makes GET request to correct endpoint', async () => {
+    const spy = mockFetchOk(completedRun)
+
+    await client.callTool({
+      name: 'dewey_get_contradiction_run',
+      arguments: { collection_id: 'col-xyz' },
+    })
+
+    const [url] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-xyz/contradictions/runs/latest')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_get_contradiction_run',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_get_contradiction_run',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('collection_id is required')
+  })
+})
+
+// ── dewey_recompute_summaries ─────────────────────────────────────────────────
+
+describe('dewey_recompute_summaries', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  it('returns enqueued count', async () => {
+    mockFetchOk({ enqueued: 12 })
+
+    const result = await client.callTool({
+      name: 'dewey_recompute_summaries',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('12 document(s)')
+  })
+
+  it('makes POST request to summaries endpoint', async () => {
+    const spy = mockFetchOk({ enqueued: 5 })
+
+    await client.callTool({
+      name: 'dewey_recompute_summaries',
+      arguments: { collection_id: 'col-xyz' },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-xyz/recompute/summaries')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(403, 'Forbidden')
+
+    const result = await client.callTool({
+      name: 'dewey_recompute_summaries',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_recompute_summaries',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+  })
+})
+
+// ── dewey_recompute_captions ──────────────────────────────────────────────────
+
+describe('dewey_recompute_captions', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+    process.env.DEWEY_COLLECTION_ID = 'col-default'
+  })
+
+  afterEach(() => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+    vi.restoreAllMocks()
+  })
+
+  it('returns enqueued count', async () => {
+    mockFetchOk({ enqueued: 30 })
+
+    const result = await client.callTool({
+      name: 'dewey_recompute_captions',
+      arguments: {},
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('30 image/table chunk(s)')
+  })
+
+  it('makes POST request to captions endpoint', async () => {
+    const spy = mockFetchOk({ enqueued: 8 })
+
+    await client.callTool({
+      name: 'dewey_recompute_captions',
+      arguments: { collection_id: 'col-xyz' },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-xyz/recompute/captions')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(403, 'Forbidden')
+
+    const result = await client.callTool({
+      name: 'dewey_recompute_captions',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+  })
+
+  it('requires collection_id when env var is unset', async () => {
+    // biome-ignore lint/performance/noDelete: assigning undefined sets the string "undefined"; delete is required to truly unset
+    delete process.env.DEWEY_COLLECTION_ID
+
+    const result = await client.callTool({
+      name: 'dewey_recompute_captions',
+      arguments: {},
+    })
+
+    expect(result.isError).toBe(true)
+  })
+})
+
+// ── dewey_delete_collection ───────────────────────────────────────────────────
+
+describe('dewey_delete_collection', () => {
+  let client: Client
+
+  beforeEach(async () => {
+    ;({ client } = await setup())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('returns success message after deletion', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, { status: 204 }),
+    )
+
+    const result = await client.callTool({
+      name: 'dewey_delete_collection',
+      arguments: { collection_id: 'col-abc' },
+    })
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+
+    expect(text).toContain('col-abc')
+    expect(text).toContain('deleted successfully')
+  })
+
+  it('makes DELETE request to correct URL', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }))
+
+    await client.callTool({
+      name: 'dewey_delete_collection',
+      arguments: { collection_id: 'col-xyz' },
+    })
+
+    const [url, init] = spy.mock.calls[0] ?? []
+    expect(url).toContain('/collections/col-xyz')
+    expect(init?.method).toBe('DELETE')
+  })
+
+  it('returns error on API failure', async () => {
+    mockFetchError(404, 'Not Found')
+
+    const result = await client.callTool({
+      name: 'dewey_delete_collection',
+      arguments: { collection_id: 'col-missing' },
+    })
+
+    expect(result.isError).toBe(true)
+    const text =
+      (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ''
+    expect(text).toContain('API error 404')
+  })
+})
