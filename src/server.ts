@@ -1402,7 +1402,7 @@ export function createServer() {
 
   server.tool(
     'dewey_detect_duplicates',
-    'Trigger a deduplication run on a Dewey collection. Identifies near-duplicate documents using MinHash signatures and marks one member of each cluster as canonical; non-canonical documents are excluded from retrieval and contradiction detection. Requires enable_deduplication on the collection. Runs asynchronously — use dewey_get_duplicate_run in a few minutes to view results.',
+    'Trigger a deduplication run on a Dewey collection. Identifies near-duplicate documents by measuring shared content across chunks and marks one member of each cluster as canonical; non-canonical documents are excluded from retrieval and contradiction detection. Requires enable_deduplication on the collection. Runs asynchronously — use dewey_get_duplicate_run in a few minutes to view results.',
     {
       collection_id: z
         .string()

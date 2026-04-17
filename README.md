@@ -75,7 +75,7 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
 
 | Tool | Description |
 |---|---|
-| `dewey_detect_duplicates` | Trigger an async deduplication run — identifies near-duplicate documents via MinHash signatures and marks one per cluster as canonical |
+| `dewey_detect_duplicates` | Trigger an async deduplication run — identifies near-duplicate documents by measuring shared content across chunks and marks one per cluster as canonical |
 | `dewey_get_duplicate_run` | Get the status and stats of the latest deduplication run (use to poll after `dewey_detect_duplicates`) |
 | `dewey_list_duplicate_groups` | List near-duplicate groups with canonical + members and coverage percentages |
 | `dewey_promote_duplicate_canonical` | Promote a different member to canonical; old canonical becomes near_duplicate |
