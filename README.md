@@ -71,6 +71,18 @@ Add to your `claude_desktop_config.json` (or equivalent MCP client config):
 | `dewey_get_contradiction_run` | Get the status and stats of the latest contradiction detection run (use to poll after `dewey_detect_contradictions`) |
 | `dewey_resolve_contradiction` | Apply a resolution instruction to a contradiction or dismiss it |
 
+### Deduplication
+
+| Tool | Description |
+|---|---|
+| `dewey_detect_duplicates` | Trigger an async deduplication run — identifies near-duplicate documents via MinHash signatures and marks one per cluster as canonical |
+| `dewey_get_duplicate_run` | Get the status and stats of the latest deduplication run (use to poll after `dewey_detect_duplicates`) |
+| `dewey_list_duplicate_groups` | List near-duplicate groups with canonical + members and coverage percentages |
+| `dewey_promote_duplicate_canonical` | Promote a different member to canonical; old canonical becomes near_duplicate |
+| `dewey_disband_duplicate_group` | Disband a group; former members rejoin retrieval as distinct documents |
+
+Non-canonical documents are excluded from retrieval and contradiction detection. Requires `enableDeduplication: true` on the collection (set via `dewey_update_collection` or the Dewey dashboard).
+
 ### Collection settings
 
 | Tool | Description |

@@ -1398,6 +1398,324 @@ export function createServer() {
     },
   )
 
+  // ── dewey_detect_duplicates ─────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_detect_duplicates',
+    'Trigger a deduplication run on a Dewey collection. Identifies near-duplicate documents using MinHash signatures and marks one member of each cluster as canonical; non-canonical documents are excluded from retrieval and contradiction detection. Requires enable_deduplication on the collection. Runs asynchronously — use dewey_get_duplicate_run in a few minutes to view results.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/duplicates/detect`,
+          { method: 'POST', headers: jsonHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const run = (await res.json()) as {
+        runId: string
+        status: string
+        jobsEnqueued: number
+        enqueuedAt: string
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Deduplication started.\nRun ID: ${run.runId}\nStatus: ${run.status}\nDocuments queued: ${run.jobsEnqueued}\nEnqueued at: ${run.enqueuedAt}\n\nUse dewey_get_duplicate_run to poll progress, or dewey_list_duplicate_groups once it completes.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_get_duplicate_run ─────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_get_duplicate_run',
+    'Get the status of the latest deduplication run for a collection. Use to poll progress after calling dewey_detect_duplicates.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/duplicates/runs/latest`,
+          { headers: authHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const run = (await res.json()) as {
+        id: string
+        status: string
+        jobsEnqueued: number | null
+        jobsProcessed: number | null
+        duplicatesDetected: number | null
+        duplicateGroupsCreated: number | null
+        startedAt: string | null
+        completedAt: string | null
+        error: string | null
+        createdAt: string
+      }
+
+      const lines = [
+        `Run ID: ${run.id}`,
+        `Status: ${run.status}`,
+        run.jobsEnqueued != null && run.jobsProcessed != null
+          ? `Progress: ${run.jobsProcessed}/${run.jobsEnqueued} documents`
+          : null,
+        run.duplicatesDetected != null
+          ? `Duplicates detected: ${run.duplicatesDetected}`
+          : null,
+        run.duplicateGroupsCreated != null
+          ? `Groups created: ${run.duplicateGroupsCreated}`
+          : null,
+        run.startedAt ? `Started: ${run.startedAt}` : null,
+        run.completedAt ? `Completed: ${run.completedAt}` : null,
+        run.error ? `Error: ${run.error}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      return { content: [{ type: 'text', text: lines }] }
+    },
+  )
+
+  // ── dewey_list_duplicate_groups ─────────────────────────────────────────────
+
+  server.tool(
+    'dewey_list_duplicate_groups',
+    'List near-duplicate groups in a Dewey collection. Each group contains one canonical document and one or more near-duplicate members, with coverage percentages describing how much of each pair overlaps.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('Maximum groups to return (1–100). Defaults to 20.'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('Pagination offset. Defaults to 0.'),
+    },
+    async ({ collection_id, limit = 20, offset = 0 }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      const params = new URLSearchParams({
+        limit: String(limit),
+        offset: String(offset),
+      })
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/duplicates?${params}`,
+          { headers: authHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const data = (await res.json()) as {
+        total: number
+        items: Array<{
+          id: string
+          canonicalDocumentId: string
+          detectedAt: string
+          members: Array<{
+            id: string
+            filename: string
+            relationship: 'canonical' | 'near_duplicate' | null
+            coverageToCanonical: number | null
+            coverageFromCanonical: number | null
+            createdAt: string
+          }>
+        }>
+      }
+
+      if (data.items.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'No duplicate groups found. If deduplication has not been enabled, turn it on via the Dewey dashboard or PATCH /collections/:id with enableDeduplication: true, then run dewey_detect_duplicates.',
+            },
+          ],
+        }
+      }
+
+      const header =
+        data.total > data.items.length
+          ? `${data.total} total duplicate group(s). Showing first ${data.items.length}:\n\n`
+          : `${data.items.length} duplicate group(s):\n\n`
+
+      const pct = (value: number | null) =>
+        value == null ? '—' : `${Math.round(value * 100)}%`
+
+      const text =
+        header +
+        data.items
+          .map((g, i) => {
+            const memberLines = g.members
+              .map((m) => {
+                if (m.relationship === 'canonical') {
+                  return `  ★ [canonical] ${m.filename} (id: ${m.id})`
+                }
+                return `  • [near_duplicate] ${m.filename} (id: ${m.id}) — coverage to canonical: ${pct(m.coverageToCanonical)}, from canonical: ${pct(m.coverageFromCanonical)}`
+              })
+              .join('\n')
+            return [
+              `[${i + 1}] Group ${g.id}`,
+              `Canonical document: ${g.canonicalDocumentId}`,
+              `Detected: ${g.detectedAt}`,
+              `Members:\n${memberLines}`,
+            ].join('\n')
+          })
+          .join('\n\n---\n\n')
+
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_promote_duplicate_canonical ───────────────────────────────────────
+
+  server.tool(
+    'dewey_promote_duplicate_canonical',
+    'Promote a different member of a duplicate group to canonical. The previous canonical becomes a near_duplicate (excluded from retrieval). Coverage percentages are cleared since they describe the old pairing — re-run detection if you need fresh numbers.',
+    {
+      group_id: z
+        .string()
+        .describe('Duplicate group ID (from dewey_list_duplicate_groups).'),
+      canonical_document_id: z
+        .string()
+        .describe(
+          'Document ID to promote to canonical. Must be an existing member of the group.',
+        ),
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ group_id, canonical_document_id, collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/duplicates/${group_id}`,
+          {
+            method: 'PATCH',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+              canonicalDocumentId: canonical_document_id,
+            }),
+            signal: timeout(),
+          },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const data = (await res.json()) as {
+        success: boolean
+        changed: boolean
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: data.changed
+              ? `Promoted ${canonical_document_id} to canonical in group ${group_id}. The previous canonical is now a near-duplicate and excluded from retrieval.`
+              : `${canonical_document_id} is already canonical in group ${group_id}. No change.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_disband_duplicate_group ───────────────────────────────────────────
+
+  server.tool(
+    'dewey_disband_duplicate_group',
+    'Disband a duplicate group. All former members rejoin retrieval as distinct documents with no group membership or canonical relationship. Use this when Dewey groups documents that should be treated as independent.',
+    {
+      group_id: z.string().describe('Duplicate group ID to disband.'),
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ group_id, collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/duplicates/${group_id}`,
+          { method: 'DELETE', headers: authHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Duplicate group ${group_id} disbanded. All former members are now independent documents in retrieval.`,
+          },
+        ],
+      }
+    },
+  )
+
   // ── dewey_delete_collection ─────────────────────────────────────────────────
 
   server.tool(
