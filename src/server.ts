@@ -261,6 +261,88 @@ export function createServer() {
     },
   )
 
+  // ── dewey_create_collection ─────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_create_collection',
+    'Create a new Dewey collection in a project. Collections are the top-level container for documents, retrieval, and research.',
+    {
+      name: z.string().min(1).max(100).describe('Name for the new collection.'),
+      project_id: z
+        .string()
+        .describe('Project ID the collection should belong to.'),
+      visibility: z
+        .enum(['private', 'public'])
+        .optional()
+        .describe('Access visibility. Defaults to "private".'),
+      chunk_size: z
+        .number()
+        .int()
+        .min(64)
+        .max(4096)
+        .optional()
+        .describe('Chunk size in tokens (64–4096). Defaults to 512.'),
+      chunk_overlap: z
+        .number()
+        .int()
+        .min(0)
+        .max(512)
+        .optional()
+        .describe('Overlap between adjacent chunks in tokens. Defaults to 64.'),
+      embedding_model: z
+        .string()
+        .optional()
+        .describe(
+          'Embedding model to use. Defaults to text-embedding-3-small.',
+        ),
+    },
+    async ({
+      name,
+      project_id,
+      visibility,
+      chunk_size,
+      chunk_overlap,
+      embedding_model,
+    }) => {
+      const body: Record<string, unknown> = { name, projectId: project_id }
+      if (visibility !== undefined) body.visibility = visibility
+      if (chunk_size !== undefined) body.chunkSize = chunk_size
+      if (chunk_overlap !== undefined) body.chunkOverlap = chunk_overlap
+      if (embedding_model !== undefined) body.embeddingModel = embedding_model
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections`, {
+          method: 'POST',
+          headers: jsonHeaders(),
+          body: JSON.stringify(body),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const c = (await res.json()) as {
+        id: string
+        name: string
+        visibility: string
+        embeddingModel: string
+        chunkSize: number
+        chunkOverlap: number
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Collection "${c.name}" created.\nID: ${c.id}\nVisibility: ${c.visibility}\nEmbedding model: ${c.embeddingModel}\nChunk size: ${c.chunkSize} (overlap: ${c.chunkOverlap})`,
+          },
+        ],
+      }
+    },
+  )
+
   // ── dewey_search ────────────────────────────────────────────────────────────
 
   server.tool(
@@ -518,6 +600,154 @@ export function createServer() {
     },
   )
 
+  // ── dewey_get_document ──────────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_get_document',
+    'Fetch metadata for a single document by ID, including status, tags, and metadata.',
+    {
+      document_id: z
+        .string()
+        .describe('Document ID (from dewey_list_documents).'),
+    },
+    async ({ document_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/documents/${document_id}`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const doc = (await res.json()) as {
+        id: string
+        filename: string
+        status: string
+        fileSizeBytes: number | null
+        sectionCount: number | null
+        chunkCount: number | null
+        contentHash: string | null
+        errorMessage: string | null
+        tags: string[]
+        metadata: Record<string, unknown>
+        createdAt: string
+      }
+
+      const lines = [
+        `${doc.filename} — ID: ${doc.id}`,
+        `Status: ${doc.status}`,
+        doc.fileSizeBytes != null
+          ? `Size: ${(doc.fileSizeBytes / 1024).toFixed(0)} KB`
+          : null,
+        doc.sectionCount != null ? `Sections: ${doc.sectionCount}` : null,
+        doc.chunkCount != null ? `Chunks: ${doc.chunkCount}` : null,
+        doc.tags.length > 0 ? `Tags: ${doc.tags.join(', ')}` : null,
+        Object.keys(doc.metadata).length > 0
+          ? `Metadata: ${JSON.stringify(doc.metadata)}`
+          : null,
+        doc.errorMessage ? `Error: ${doc.errorMessage}` : null,
+        `Created: ${doc.createdAt}`,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      return { content: [{ type: 'text', text: lines }] }
+    },
+  )
+
+  // ── dewey_wait_for_document ─────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_wait_for_document',
+    'Long-poll until a document finishes processing (reaches "ready" or "error"), then return its metadata. Blocks for up to 5 minutes. Useful after uploading a document when you need to confirm it is ready before querying.',
+    {
+      document_id: z
+        .string()
+        .describe('Document ID to wait for (from dewey_list_documents).'),
+    },
+    async ({ document_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/documents/${document_id}/wait`, {
+          headers: authHeaders(),
+          signal: AbortSignal.timeout(330_000), // 5.5 min — slightly past the API's 5-min timeout
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const doc = (await res.json()) as {
+        id: string
+        filename: string
+        status: string
+        sectionCount: number | null
+        chunkCount: number | null
+        errorMessage: string | null
+      }
+
+      const lines = [
+        `${doc.filename} — ID: ${doc.id}`,
+        `Status: ${doc.status}`,
+        doc.sectionCount != null ? `Sections: ${doc.sectionCount}` : null,
+        doc.chunkCount != null ? `Chunks: ${doc.chunkCount}` : null,
+        doc.errorMessage ? `Error: ${doc.errorMessage}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      return { content: [{ type: 'text', text: lines }] }
+    },
+  )
+
+  // ── dewey_list_document_tags ────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_list_document_tags',
+    'List all tags used across documents in a collection, with document counts. Useful for discovering available filter values before calling dewey_search or dewey_research.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/tags`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const { tags } = (await res.json()) as {
+        tags: Array<{ name: string; count: number }>
+      }
+
+      if (tags.length === 0) {
+        return {
+          content: [
+            { type: 'text', text: 'No tags found in this collection.' },
+          ],
+        }
+      }
+
+      const text = tags.map((t) => `${t.name} (${t.count})`).join('\n')
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
   // ── dewey_get_section ───────────────────────────────────────────────────────
 
   server.tool(
@@ -558,6 +788,53 @@ export function createServer() {
         .join('\n')
 
       const text = `${header}\n\n${section.content ?? '(content not available)'}`
+
+      return { content: [{ type: 'text', text }] }
+    },
+  )
+
+  // ── dewey_get_section_chunks ────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_get_section_chunks',
+    'Fetch all text chunks for a section. Use after dewey_get_section or dewey_scan_sections when you need finer-grained content than full section Markdown.',
+    {
+      section_id: z
+        .string()
+        .describe(
+          'Section ID (from dewey_get_document_sections or dewey_scan_sections).',
+        ),
+    },
+    async ({ section_id }) => {
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/sections/${section_id}/chunks`, {
+          headers: authHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const chunks = (await res.json()) as Array<{
+        id: string
+        content: string
+        position: number
+        tokenCount: number
+      }>
+
+      if (chunks.length === 0) {
+        return {
+          content: [
+            { type: 'text', text: 'No chunks found for this section.' },
+          ],
+        }
+      }
+
+      const text = chunks
+        .map((c) => `[${c.position}] (${c.tokenCount} tokens) ${c.content}`)
+        .join('\n\n')
 
       return { content: [{ type: 'text', text }] }
     },
@@ -1126,6 +1403,52 @@ export function createServer() {
     },
   )
 
+  // ── dewey_describe_collection ──────────────────────────────────────────────
+
+  server.tool(
+    'dewey_describe_collection',
+    'Auto-generate a description for a collection using an LLM that reads the document filenames and section headings. Saves the description to the collection and returns the updated collection. Requires an OpenAI provider key.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/describe`, {
+          method: 'POST',
+          headers: jsonHeaders(),
+          signal: AbortSignal.timeout(30_000),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const c = (await res.json()) as {
+        id: string
+        name: string
+        description: string | null
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Collection "${c.name}" (${c.id}) description updated:\n${c.description ?? '(no description generated)'}`,
+          },
+        ],
+      }
+    },
+  )
+
   // ── dewey_delete_document ───────────────────────────────────────────────────
 
   server.tool(
@@ -1154,6 +1477,51 @@ export function createServer() {
           {
             type: 'text',
             text: `Document ${document_id} deleted successfully.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_batch_delete_documents ───────────────────────────────────────────
+
+  server.tool(
+    'dewey_batch_delete_documents',
+    'Delete multiple documents at once. Permanently removes the documents and their stored files. This action cannot be undone.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID the documents belong to. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+      document_ids: z
+        .array(z.string())
+        .min(1)
+        .describe('IDs of the documents to delete.'),
+    },
+    async ({ collection_id, document_ids }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/documents/batch`, {
+          method: 'DELETE',
+          headers: jsonHeaders(),
+          body: JSON.stringify({ ids: document_ids }),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `${document_ids.length} document(s) deleted successfully.`,
           },
         ],
       }
@@ -1269,6 +1637,63 @@ export function createServer() {
           {
             type: 'text',
             text: `Document "${doc.filename}" (${doc.id}) re-queued for processing. Status: ${doc.status}.`,
+          },
+        ],
+      }
+    },
+  )
+
+  // ── dewey_retry_failed_documents ───────────────────────────────────────────
+
+  server.tool(
+    'dewey_retry_failed_documents',
+    'Retry all documents in a collection that are currently in error status. Re-queues them for processing in one call.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${collId}/documents/retry-failed`,
+          { method: 'POST', headers: jsonHeaders(), signal: timeout() },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const docs = (await res.json()) as Array<{
+        id: string
+        filename: string
+        status: string
+      }>
+
+      if (docs.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'No documents in error state — nothing to retry.',
+            },
+          ],
+        }
+      }
+
+      const list = docs.map((d) => `  ${d.filename} (${d.id})`).join('\n')
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `${docs.length} document(s) re-queued for processing:\n${list}`,
           },
         ],
       }
@@ -1511,6 +1936,51 @@ export function createServer() {
           },
         ],
       }
+    },
+  )
+
+  // ── dewey_recompute_claims ──────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_recompute_claims',
+    'Re-extract claims from all ready documents in a collection. Deletes existing claims and re-runs extraction with the current LLM model. Runs asynchronously — use dewey_get_collection_stats to track progress.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+    },
+    async ({ collection_id }) => {
+      const collId = collectionId(collection_id)
+      if (!collId) return missingCollection()
+
+      let res: Response
+      try {
+        res = await fetch(`${API_URL}/collections/${collId}/recompute/claims`, {
+          method: 'POST',
+          headers: jsonHeaders(),
+          signal: timeout(),
+        })
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const { enqueued, runId } = (await res.json()) as {
+        enqueued: number
+        runId?: string
+      }
+
+      const lines = [
+        `Claim extraction queued for ${enqueued} document(s).`,
+        runId ? `Run ID: ${runId}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      return { content: [{ type: 'text', text: lines }] }
     },
   )
 
