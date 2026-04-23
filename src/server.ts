@@ -1275,6 +1275,100 @@ export function createServer() {
     },
   )
 
+  // ── dewey_update_document ───────────────────────────────────────────────────
+
+  server.tool(
+    'dewey_update_document',
+    'Update the tags and/or metadata on an existing document. Tags replace the existing tag set entirely. Metadata is shallow-merged with existing values by default; set replace_metadata to true to replace it entirely.',
+    {
+      collection_id: z
+        .string()
+        .optional()
+        .describe(
+          'Collection ID the document belongs to. Required if DEWEY_COLLECTION_ID env var is not set.',
+        ),
+      document_id: z
+        .string()
+        .describe('ID of the document to update (from dewey_list_documents).'),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'New tag list. Replaces the existing tags entirely. Tags are lowercased and deduplicated automatically.',
+        ),
+      metadata: z
+        .record(z.unknown())
+        .optional()
+        .describe(
+          'Metadata key-value pairs to set. Shallow-merged with existing metadata by default.',
+        ),
+      replace_metadata: z
+        .boolean()
+        .optional()
+        .describe(
+          'If true, replace all existing metadata instead of merging. Default false.',
+        ),
+    },
+    async ({
+      collection_id,
+      document_id,
+      tags,
+      metadata,
+      replace_metadata,
+    }) => {
+      const colId = collection_id ?? process.env.DEWEY_COLLECTION_ID
+      if (!colId) return missingCollection()
+
+      const body: Record<string, unknown> = {}
+      if (tags !== undefined) body.tags = tags
+      if (metadata !== undefined) body.metadata = metadata
+      if (replace_metadata) body.replaceMetadata = true
+
+      if (Object.keys(body).length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'No fields to update — provide tags, metadata, or both.',
+            },
+          ],
+        }
+      }
+
+      let res: Response
+      try {
+        res = await fetch(
+          `${API_URL}/collections/${colId}/documents/${document_id}`,
+          {
+            method: 'PATCH',
+            headers: jsonHeaders(),
+            body: JSON.stringify(body),
+            signal: timeout(),
+          },
+        )
+      } catch (err) {
+        return fetchError(err)
+      }
+      if (!res.ok) return httpError(res)
+
+      const doc = (await res.json()) as {
+        id: string
+        filename: string
+        tags: string[]
+        metadata: Record<string, unknown>
+      }
+
+      const parts: string[] = [
+        `Document "${doc.filename}" (${doc.id}) updated.`,
+      ]
+      if (doc.tags.length > 0) parts.push(`Tags: ${doc.tags.join(', ')}`)
+      if (Object.keys(doc.metadata).length > 0)
+        parts.push(`Metadata: ${JSON.stringify(doc.metadata)}`)
+
+      return { content: [{ type: 'text', text: parts.join('\n') }] }
+    },
+  )
+
   // ── dewey_get_contradiction_run ─────────────────────────────────────────────
 
   server.tool(
