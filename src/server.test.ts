@@ -1610,6 +1610,8 @@ describe('dewey_update_collection', () => {
     enableSummarization: true,
     enableCaptioning: false,
     enableClaimExtraction: true,
+    enableDeduplication: false,
+    enableReranking: true,
   }
 
   it('returns formatted collection after update', async () => {
@@ -1639,6 +1641,8 @@ describe('dewey_update_collection', () => {
     expect(text).toContain('Summarization:     enabled')
     expect(text).toContain('Captioning:        disabled')
     expect(text).toContain('Claim extraction:  enabled')
+    expect(text).toContain('Deduplication:     disabled')
+    expect(text).toContain('Reranking:         enabled')
   })
 
   it('shows description and instructions when set', async () => {
@@ -1703,6 +1707,8 @@ describe('dewey_update_collection', () => {
         enable_summarization: true,
         enable_captioning: false,
         enable_claim_extraction: true,
+        enable_deduplication: true,
+        enable_reranking: false,
       },
     })
 
@@ -1711,6 +1717,8 @@ describe('dewey_update_collection', () => {
     expect(body.enableSummarization).toBe(true)
     expect(body.enableCaptioning).toBe(false)
     expect(body.enableClaimExtraction).toBe(true)
+    expect(body.enableDeduplication).toBe(true)
+    expect(body.enableReranking).toBe(false)
   })
 
   it('makes PATCH request to collections endpoint', async () => {

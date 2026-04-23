@@ -1038,6 +1038,18 @@ export function createServer() {
         .describe(
           'Enable automatic extraction of factual claims from document content.',
         ),
+      enable_deduplication: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable near-duplicate document detection. Non-canonical members are excluded from retrieval.',
+        ),
+      enable_reranking: z
+        .boolean()
+        .optional()
+        .describe(
+          'Re-score search results with a cross-encoder for higher relevance. Disable for lower query latency.',
+        ),
     },
     async ({
       collection_id,
@@ -1048,6 +1060,8 @@ export function createServer() {
       enable_summarization,
       enable_captioning,
       enable_claim_extraction,
+      enable_deduplication,
+      enable_reranking,
     }) => {
       const collId = collectionId(collection_id)
       if (!collId) return missingCollection()
@@ -1063,6 +1077,10 @@ export function createServer() {
         body.enableCaptioning = enable_captioning
       if (enable_claim_extraction !== undefined)
         body.enableClaimExtraction = enable_claim_extraction
+      if (enable_deduplication !== undefined)
+        body.enableDeduplication = enable_deduplication
+      if (enable_reranking !== undefined)
+        body.enableReranking = enable_reranking
 
       let res: Response
       try {
@@ -1086,6 +1104,8 @@ export function createServer() {
         enableSummarization: boolean
         enableCaptioning: boolean
         enableClaimExtraction: boolean
+        enableDeduplication: boolean
+        enableReranking: boolean
       }
 
       const text = [
@@ -1096,6 +1116,8 @@ export function createServer() {
         `Summarization:     ${c.enableSummarization ? 'enabled' : 'disabled'}`,
         `Captioning:        ${c.enableCaptioning ? 'enabled' : 'disabled'}`,
         `Claim extraction:  ${c.enableClaimExtraction ? 'enabled' : 'disabled'}`,
+        `Deduplication:     ${c.enableDeduplication ? 'enabled' : 'disabled'}`,
+        `Reranking:         ${c.enableReranking ? 'enabled' : 'disabled'}`,
       ]
         .filter(Boolean)
         .join('\n')
