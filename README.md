@@ -6,8 +6,6 @@
 
 # @meetdewey/mcp
 
-[![CI](https://github.com/meetdewey/mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/meetdewey/mcp/actions/workflows/ci.yml)
-
 MCP server for [Dewey](https://meetdewey.com) — search and research your document collections from Claude, Cursor, and any MCP-compatible agent. See the [full API reference](https://meetdewey.com/docs) for details.
 
 ## Installation
