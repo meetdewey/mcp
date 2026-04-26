@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.meetdewey/dewey",
+  "title": "Dewey",
+  "description": "Agentic search over your Dewey document collections from any MCP-compatible client.",
+  "version": "1.5.4",
+  "websiteUrl": "https://meetdewey.com",
+  "repository": {
+    "url": "https://github.com/meetdewey/mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@meetdewey/mcp",
+      "version": "1.5.4",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "DEWEY_API_KEY",
+          "description": "Your Dewey project API key",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "DEWEY_COLLECTION_ID",
+          "description": "Default collection ID. When set, tools that accept collection_id fall back to this value.",
+          "isRequired": false
+        },
+        {
+          "name": "DEWEY_API_URL",
+          "description": "Override the API base URL (default: https://api.meetdewey.com/v1)",
+          "isRequired": false
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.meetdewey.com/mcp"
+    }
+  ]
+}
