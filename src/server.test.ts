@@ -31,6 +31,39 @@ function mockFetchError(status: number, body = 'Internal Server Error') {
     .mockResolvedValue(new Response(body, { status }))
 }
 
+// ── tools/list — annotation coverage ────────────────────────────────────────
+
+// Anthropic's connector directory policy (§5.E) and review criteria require
+// every tool to advertise a `title` plus a hint indicating safety: reads get
+// readOnlyHint, writes get destructiveHint. Locking the shape in here covers
+// both transports, since the hosted MCP route registers the same tools via
+// the same `registerTools()` from mcp-core.
+describe('tool annotations', () => {
+  it('every tool advertises title + a readOnly/destructive hint', async () => {
+    const { client } = await setup()
+    type ToolMeta = {
+      name: string
+      annotations?: {
+        title?: string
+        readOnlyHint?: boolean
+        destructiveHint?: boolean
+      }
+    }
+    const { tools } = (await client.listTools()) as { tools: ToolMeta[] }
+    expect(tools.length).toBeGreaterThanOrEqual(35)
+    for (const tool of tools) {
+      const ann = tool.annotations
+      expect(ann?.title, `${tool.name} missing title`).toBeTruthy()
+      const isRead = ann?.readOnlyHint === true
+      const isWrite = ann?.destructiveHint === true
+      expect(
+        isRead !== isWrite,
+        `${tool.name} must declare exactly one of readOnlyHint:true or destructiveHint:true`,
+      ).toBe(true)
+    }
+  })
+})
+
 // ── dewey_list_collections ────────────────────────────────────────────────────
 
 describe('dewey_list_collections', () => {
