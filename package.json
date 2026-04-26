@@ -1,6 +1,7 @@
 {
   "name": "@meetdewey/mcp",
-  "version": "1.5.3",
+  "version": "1.5.4",
+  "mcpName": "com.meetdewey/dewey",
   "description": "MCP server for Dewey document search and research",
   "type": "module",
   "bin": {
